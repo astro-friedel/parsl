@@ -701,6 +701,10 @@ class DataFlowKernel(object):
                 newfunc = self.data_manager.replace_task_stage_out(f_copy, func, executor)
                 if newfunc:
                     func = newfunc
+            elif isinstance(f, DataFuture):
+                f.tid = app_fut.tid
+                f.setParent(app_fut)
+                app_fut._outputs.append(f)
             else:
                 logger.debug("Not performing output staging for: {}".format(repr(f)))
                 app_fut._outputs.append(DataFuture(app_fut, f, tid=app_fut.tid))

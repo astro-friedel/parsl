@@ -36,7 +36,7 @@ class DataFuture(Future):
         else:
             self.set_result(self.file_obj)
 
-    def __init__(self, fut, file_obj, tid=None):
+    def __init__(self, fut, file_obj, tid=None, noinit=False):
         """Construct the DataFuture object.
 
         If the file_obj is a string convert to a File.
@@ -57,10 +57,11 @@ class DataFuture(Future):
         else:
             raise ValueError("DataFuture must be initialized with a File")
         self.parent = fut
-
+        self.noinit = noinit
         if fut is None:
-            logger.debug("Setting result to filepath immediately since no parent future was passed")
-            self.set_result(self.file_obj)
+            if not noinit:
+                logger.debug("Setting result to filepath immediately since no parent future was passed")
+                self.set_result(self.file_obj)
         elif isinstance(fut, Future):
             self.parent.add_done_callback(self.parent_callback)
         else:
@@ -73,6 +74,9 @@ class DataFuture(Future):
         """Returns the task_id of the task that will resolve this DataFuture."""
         return self._tid
 
+    @tid.setter
+    def tid(self, val):
+        self._tid = val
     @property
     def filepath(self):
         """Filepath of the File object this datafuture represents."""
@@ -83,6 +87,14 @@ class DataFuture(Future):
         """Filepath of the File object this datafuture represents."""
         return self.filepath
 
+    def setParent(self, fut):
+        if not isinstance(fut, Future):
+            raise NotFutureError("DataFuture parent must be either another Future")
+        if self.parent is not None:
+            raise ValueError("DataFuture already has a parent")
+        self.parent = fut
+        self.parent.add_done_callback(self.parent_callback)
+
     def cancel(self):
         raise NotImplementedError("Cancel not implemented")
 
@@ -92,6 +104,8 @@ class DataFuture(Future):
     def running(self):
         if self.parent:
             return self.parent.running()
+        if self.noinit:
+            return True
         else:
             return False
 
