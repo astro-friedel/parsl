@@ -758,7 +758,8 @@ class DataFlowKernel:
 
         return exec_fu
 
-    def _add_input_deps(self, executor: str, args: Sequence[Any], kwargs: Dict[str, Any], func: Callable) -> Tuple[Sequence[Any], Dict[str, Any],
+    def _add_input_deps(self, executor: str, args: Sequence[Any], kwargs: Dict[str, Any], func: Callable,
+                        task_record: TaskRecord) -> Tuple[Sequence[Any], Dict[str, Any],
                                                                                                                    Callable]:
         """Look for inputs of the app that are files. Give the data manager
         the opportunity to replace a file with a data future for that file,
@@ -793,11 +794,12 @@ class DataFlowKernel:
 
         return tuple(newargs), kwargs, func
 
-    def _add_output_deps(self, executor: str, args: Sequence[Any], kwargs: Dict[str, Any], app_fut: AppFuture, func: Callable, task_id: int) -> Callable:
+    def _add_output_deps(self, executor: str, args: Sequence[Any], kwargs: Dict[str, Any], app_fut: AppFuture,
+                         func: Callable, task_id: int, task_record: TaskRecord) -> Callable:
         logger.debug("Adding output dependencies")
         outputs = kwargs.get('outputs', [])
         if isinstance(outputs, DynamicFileList):
-            outputs.set_dataflow(self, executor, self.check_staging_inhibited(kwargs), task_id)
+            outputs.set_dataflow(self, executor, self.check_staging_inhibited(kwargs), task_id, task_record)
             outputs.set_parent(app_fut)
             app_fut._outputs = outputs
             return func
@@ -826,10 +828,10 @@ class DataFlowKernel:
                 stageout_fut = self.data_manager.stage_out(f_copy, executor, app_fut)
                 if stageout_fut:
                     logger.debug("Adding a dependency on stageout future for {}".format(repr(file)))
-                    df = DataFuture(stageout_fut, file, tid=app_fut.tid)
+                    df = DataFuture(stageout_fut, file, tid=app_fut.tid, app_fut=app_fut, dfk=self)
                 else:
                     logger.debug("No stageout dependency for {}".format(repr(file)))
-                    df = DataFuture(app_fut, file, tid=app_fut.tid)
+                    df = DataFuture(app_fut, file, tid=app_fut.tid, app_fut=app_fut, dfk=self)
 
                 # this is a hook for post-task stageout
                 # note that nothing depends on the output - which is maybe a bug
@@ -838,7 +840,7 @@ class DataFlowKernel:
                 return rewritable_func, f_copy, df
             else:
                 logger.debug("Not performing output staging for: {}".format(repr(file)))
-                return rewritable_func, file, DataFuture(app_fut, file, tid=app_fut.tid)
+                return rewritable_func, file, DataFuture(app_fut, file, tid=app_fut.tid, app_fut=app_fut, dfk=self)
 
         for idx, file in enumerate(outputs):
             func, outputs[idx], o = stageout_one_file(file, func)
@@ -1050,9 +1052,9 @@ class DataFlowKernel:
         task_record['app_fu'] = app_fu
 
         # Transform remote input files to data futures
-        app_args, app_kwargs, func = self._add_input_deps(executor, app_args, app_kwargs, func)
+        app_args, app_kwargs, func = self._add_input_deps(executor, app_args, app_kwargs, func, task_record)
 
-        func = self._add_output_deps(executor, app_args, app_kwargs, app_fu, func, task_id)
+        func = self._add_output_deps(executor, app_args, app_kwargs, app_fu, func, task_id, task_record)
 
         logger.debug("Added output dependencies")
 
