@@ -77,6 +77,13 @@ class DynamicFileList(Future, list):
             """Return whether this is an empty wrapper."""
             return self._empty
 
+        @property
+        def uuid(self):
+            """Return the uuid of the file object this datafuture represents."""
+            if self._empty:
+                return None
+            return self.file_obj.uuid
+
         @typeguard.typechecked
         def set(self, file_obj: Union[File, DataFuture, 'DynamicFileList.DynamicFile']):
             """Set the file_obj for this instance.
@@ -90,6 +97,11 @@ class DynamicFileList(Future, list):
             self._empty = False
             self._is_df = isinstance(self.file_obj, DataFuture)
             self.parent.add_done_func(self.file_obj.filename, self.done)
+
+        def cleancopy(self):
+            if self._is_df:
+                return self.file_obj.file_obj.cleancopy()
+            return self.file_obj.cleancopy()
 
         def convert_to_df(self):
             """Convert the file_obj to a DataFuture."""
@@ -209,6 +221,7 @@ class DynamicFileList(Future, list):
         self._in_callback = False
         self._staging_inhibited = False
         self._output_task_id = None
+        self.task_record = None
         if files is not None:
             self.extend(files)
 
@@ -268,7 +281,7 @@ class DynamicFileList(Future, list):
         """
         return self.DynamicFile(self, file_obj)
 
-    def set_dataflow(self, dataflow, executor: str, st_inhibited: bool, task_id: int):
+    def set_dataflow(self, dataflow, executor: str, st_inhibited: bool, task_id: int, task_record: dict):
         """ Set the dataflow and executor for this instance
 
         Args:
@@ -280,6 +293,7 @@ class DynamicFileList(Future, list):
         self.dataflow = dataflow
         self._staging_inhibited = st_inhibited
         self._output_task_id = task_id
+        self.task_record = task_record
         for idx in range(self._last_idx + 1):
             self.stage_file(idx)
 
@@ -465,6 +479,11 @@ class DynamicFileList(Future, list):
             self._last_idx = max(self._last_idx, key)
             self._call_callbacks()
             self.stage_file(key)
+        elif value.uuid == super().__getitem__(key).uuid:
+            if isinstance(value, DynamicFileList.DynamicFile):
+                super().__getitem__(key).set(value.file_obj)
+            else:
+                super().__getitem__(key).set(value)
         else:
             raise ValueError("Cannot set a value that is not empty")
             # if not isinstance(value, self.DynamicFile):
