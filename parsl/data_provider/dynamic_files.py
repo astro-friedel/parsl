@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import sys
 from concurrent.futures import Future
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Union
 
@@ -80,7 +81,7 @@ class DynamicFileList(Future):
             return self._staged_out
 
         @property
-        def scheme(self) -> str:
+        def scheme(self) -> Union[str, None]:
             """Return the scheme for the wrapped file object."""
             if self.empty:
                 return None
@@ -686,6 +687,47 @@ class DynamicFileList(Future):
             done = "not done"
         return f"<{module}.{qualname} object at {hex(id(self))} containing {len(self)} objects {done}>"
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['dfk']
+        del state['_condition']
+        if self.parent is not None:
+            #state['parent'] = self.parent.__getstate__()
+            if state['parent'].task_record is not None and 'dfk' in state['parent'].task_record:
+                del state['parent'].task_record['dfk']
+        if self.task_record is not None and 'dfk' in self.task_record:
+            del self.task_record['dfk']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def __reduce__(self):
+        return self.__reduce_ex__(None)
+
+    def __reduce_ex__(self, proto):
+        if self.task_record is not None:
+            tr = self.task_record.copy()
+            if 'dfk' in tr:
+                del tr['dfk']
+        else:
+            tr = None
+        if self.parent is not None:
+            par = deepcopy(self.parent)
+            if 'dfk' in par.task_record:
+                del par.task_record['dfk']
+        else:
+            par = None
+        return (self.__class__, (self._files, ), {"files_done": self.files_done,
+                                                  "_last_idx": self._last_idx,
+                                                  "executor": self.executor,
+                                                  "parent": par,
+                                                  "_sub_callbacks": self._sub_callbacks,
+                                                  "_in_callback": self._in_callback,
+                                                  "_staging_inhibited": self._staging_inhibited,
+                                                  "_output_task_id": self._output_task_id,
+                                                  "task_record": tr,
+                                                  "_isdone": self._isdone})
 
 class DynamicFileSubList(DynamicFileList):
     @typeguard.typechecked
