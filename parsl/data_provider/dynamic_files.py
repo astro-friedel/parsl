@@ -20,6 +20,7 @@ import typeguard
 from parsl.app.futures import DataFuture
 from parsl.data_provider.files import File
 from parsl.dataflow.futures import AppFuture
+from parsl.dataflow.taskrecord import deepcopy as trcopy
 
 logger = logging.getLogger(__name__)
 
@@ -693,10 +694,10 @@ class DynamicFileList(Future):
         del state['_condition']
         if self.parent is not None:
             #state['parent'] = self.parent.__getstate__()
-            if state['parent'].task_record is not None and 'dfk' in state['parent'].task_record:
-                del state['parent'].task_record['dfk']
-        if self.task_record is not None and 'dfk' in self.task_record:
-            del self.task_record['dfk']
+            if state['parent'].task_record is not None:
+                state['parent'].task_record = trcopy(self.parent.task_record)
+        if self.task_record is not None:
+            state['task_record'] = trcopy(self.task_record)
         return state
 
     def __setstate__(self, state):
@@ -707,7 +708,7 @@ class DynamicFileList(Future):
 
     def __reduce_ex__(self, proto):
         if self.task_record is not None:
-            tr = self.task_record.copy()
+            tr = trcopy(self.task_record)
             if 'dfk' in tr:
                 del tr['dfk']
         else:
@@ -718,6 +719,20 @@ class DynamicFileList(Future):
                 del par.task_record['dfk']
         else:
             par = None
+        data = {}
+        data["files_done"] = self.files_done
+        data["_last_idx"] = self._last_idx
+        data["executor"] = self.executor
+        data["parent"] = par
+        data["_sub_callbacks"] = self._sub_callbacks
+        data["_in_callback"] = self._in_callback
+        data["_staging_inhibited"] = self._staging_inhibited
+        data["_output_task_id"] = self._output_task_id
+        data["task_record"] = tr
+        data["_isdone"] = self._isdone
+        return (self.__class__, (self._files,), data)
+
+        '''
         return (self.__class__, (self._files, ), {"files_done": self.files_done,
                                                   "_last_idx": self._last_idx,
                                                   "executor": self.executor,
@@ -727,7 +742,7 @@ class DynamicFileList(Future):
                                                   "_staging_inhibited": self._staging_inhibited,
                                                   "_output_task_id": self._output_task_id,
                                                   "task_record": tr,
-                                                  "_isdone": self._isdone})
+                                                  "_isdone": self._isdone})'''
 
 class DynamicFileSubList(DynamicFileList):
     @typeguard.typechecked

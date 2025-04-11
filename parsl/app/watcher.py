@@ -4,15 +4,16 @@ any files created by the bash_app. It can be used with or without the file prove
 """
 from typing import Callable, List, Union
 
+import typeguard
+
 from parsl.app.app import python_app
 from parsl.data_provider.dynamic_files import DynamicFileList
 
 
-@python_app
-def bash_watch(func: Callable,
-               outputs: DynamicFileList,
-               paths: Union[List[str], str] = ".",
-               **kwargs) -> int:
+def _bash_watcher(func: Callable,
+                  outputs: DynamicFileList,
+                  paths: Union[List[str], str] = ".",
+                  **kwargs) -> int:
     """This function wraps a bash_app and captures any files created by the bash_app. This is done
     by using the watchdog library to watch the specified paths for file creation events. It is most
     useful when using the file provenance framework. Note: if multiple `bash_watch` instances
@@ -29,8 +30,6 @@ def bash_watch(func: Callable,
         what was specified here.
     paths: string or list
         The path or paths to watch, recursively, for file creation events. Default is ".".
-    *args : list
-        Arbitrary arguments to pass to the bash_app.
     **kwargs : dict
         Arbitrary keyword arguments to pass to the bash_app.
 
@@ -46,6 +45,7 @@ def bash_watch(func: Callable,
 
     class BashWatcher(FileSystemEventHandler):
         """A class to watch for file creation events"""
+
         def __init__(self):
             super().__init__()
             self.added_files = []
@@ -69,6 +69,7 @@ def bash_watch(func: Callable,
             if event.src_path in self.added_files:
                 self.added_files.remove(event.src_path)
                 self.added_files.append(event.dest_path)
+
     # do some type checking (can't use typeguard here)
     if not isinstance(outputs, DynamicFileList):
         raise ValueError("outputs must be a DynamicFileList")
@@ -95,3 +96,31 @@ def bash_watch(func: Callable,
     for added in watcher.added_files:
         outputs.append(File(added))
     return res
+
+
+@typeguard.typechecked
+def bash_watch(executor: str, func: Callable, outputs: DynamicFileList, paths: Union[List[str], str] = ".", **kwargs):
+    """ Wrap a call to the bash watcher in a python_app
+
+    Parameters
+    ----------
+    executor: str
+        The name of the executor to use for the python_app. The *must* be a ThreadPoolExecutor, no checking is currently done.
+    func: callable
+        The bash_app to run.
+    outputs : DynamicFileList
+        The list, partial, or complete, of files to watch for. Can also be empty. When the function
+        completes it will hold the list of files that were created by the bash_app, regardless of
+        what was specified here.
+    paths: string or list
+        The path or paths to watch, recursively, for file creation events. Default is ".".
+    **kwargs : dict
+        Arbitrary keyword arguments to pass to the bash_app.
+
+    Returns
+    -------
+    The return code of the wrapped `bash_app`
+
+    """
+    f = python_app(executors=[executor])(_bash_watcher)
+    return f(func, outputs=outputs, paths=paths, **kwargs)
