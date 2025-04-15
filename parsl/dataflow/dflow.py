@@ -328,7 +328,7 @@ class DataFlowKernel:
             if not fo.size:
                 fo.size = os.stat(fo.filepath).st_size
             if not fo.md5sum:
-                fo.md5sum = md5(open(fo, 'rb').read()).hexdigest()
+                fo.md5sum = md5(open(fo.filepath, 'rb').read()).hexdigest()
 
         file_log_info = {'file_name': file.filename,
                          'file_id': str(file.uuid),

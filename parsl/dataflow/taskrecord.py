@@ -115,7 +115,7 @@ def deepcopy(tr: TaskRecord) -> TaskRecord:
         'func_name': dcpy(tr['func'].__name__),
         'memoize': dcpy(tr['memoize']),
         'hashsum': dcpy(tr['hashsum']),
-        'exec_fu': dcpy(tr['exec_fu']),
+        'exec_fu': None,
         'fail_count': dcpy(tr['fail_count']),
         'fail_cost': dcpy(tr['fail_cost']),
         'fail_history': dcpy(tr['fail_history']),
