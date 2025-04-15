@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import Future
 from functools import partial
 from inspect import Parameter, signature
 
@@ -6,6 +7,10 @@ from parsl.app.app import AppBase
 from parsl.app.errors import wrap_error
 from parsl.data_provider.files import File
 from parsl.dataflow.dflow import DataFlowKernelLoader
+from parsl.data_provider.dynamic_files import DynamicFileList
+
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 logger = logging.getLogger(__name__)
 
@@ -159,4 +164,123 @@ class BashApp(AppBase):
                              ignore_for_cache=self.ignore_for_cache,
                              app_kwargs=invocation_kwargs)
 
+        return app_fut
+
+
+class BashWatcher(FileSystemEventHandler):
+    """A class to watch for file creation events"""
+
+    def __init__(self):
+        super().__init__()
+        self.added_files = []
+
+    def on_created(self, event) -> None:
+        if event.is_directory:
+            return
+        self.added_files.append(event.src_path)
+
+    def on_deleted(self, event) -> None:
+        """ If a file is deleted, and we recoded its creation, remove it from our list as well"""
+        if event.is_directory:
+            return
+        if event.src_path in self.added_files:
+            self.added_files.remove(event.src_path)
+
+    def on_moved(self, event) -> None:
+        """ If a file is moved, and we recorded its creation, change its list entry"""
+        if event.is_directory:
+            return
+        if event.src_path in self.added_files:
+            self.added_files.remove(event.src_path)
+            self.added_files.append(event.dest_path)
+
+
+class BashWatch(AppBase):
+    def __init__(self, func, data_flow_kernel=None, cache=False, executors='all', ignore_for_cache=None):
+        super().__init__(func, data_flow_kernel=data_flow_kernel, executors=executors, cache=cache,
+                         ignore_for_cache=ignore_for_cache)
+        self.kwargs = {}
+
+        # We duplicate the extraction of parameter defaults
+        # to self.kwargs to ensure availability at point of
+        # command string format. Refer: #349
+        sig = signature(func)
+
+        for s in sig.parameters:
+            if sig.parameters[s].default is not Parameter.empty:
+                self.kwargs[s] = sig.parameters[s].default
+
+        # partial is used to attach the first arg the "func" to the remote_side_bash_executor
+        # this is done to avoid passing a function type in the args which parsl.serializer
+        # doesn't support
+        remote_fn = partial(remote_side_bash_executor, self.func)
+        remote_fn.__name__ = self.func.__name__
+        self.wrapped_remote_function = wrap_error(remote_fn)
+
+        self.watcher = BashWatcher()
+        self.observer = Observer()
+        self.outputs = None
+
+    def gather(self) -> None:
+        """ Gather any files that were detected. """
+        print("gather")
+        self.observer.stop()
+        self.observer.join()
+        # e = parent_fu.exception()
+        # if e:
+        #     self.outputs.set_exception(e)
+        # else:
+        for added in self.watcher.added_files:
+            self.outputs.append(File(added))
+        print("Done gather")
+        # self.outputs._is_done = True
+        # self.outputs.parent._outputs = self.outputs
+        # self.outputs.set_result(self.outputs)
+        # self.outputs._observer = False
+
+    def __call__(self, outputs, *args, paths=".", **kwargs):
+        """Handle the call to a Bash app.
+
+        Args:
+             - Arbitrary
+
+        Kwargs:
+             - Arbitrary
+
+        Returns:
+                   App_fut
+
+        """
+        print("Calling")
+        invocation_kwargs = {}
+        invocation_kwargs.update(self.kwargs)
+        invocation_kwargs.update(kwargs)
+        if not isinstance(outputs, DynamicFileList):
+            raise ValueError("outputs must be a DynamicFileList.")
+        outputs.clear()
+        invocation_kwargs['outputs'] = outputs
+        self.outputs = outputs
+        outputs._observer = True
+        if isinstance(paths, str):
+            paths = [paths]
+        elif isinstance(paths, list):
+            pass
+        else:
+            raise ValueError("paths must be a string or list of strings.")
+
+        if self.data_flow_kernel is None:
+            dfk = DataFlowKernelLoader.dfk()
+        else:
+            dfk = self.data_flow_kernel
+
+        for pth in paths:
+            self.observer.schedule(self.watcher, pth, recursive=True)
+        self.observer.start()
+        self.outputs.add_watcher_callback(self.gather)
+        app_fut = dfk.submit(self.wrapped_remote_function,
+                             app_args=args,
+                             executors=self.executors,
+                             cache=self.cache,
+                             ignore_for_cache=self.ignore_for_cache,
+                             app_kwargs=invocation_kwargs)
         return app_fut
