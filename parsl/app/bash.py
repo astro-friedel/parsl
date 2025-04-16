@@ -1,7 +1,10 @@
 import logging
-from concurrent.futures import Future
 from functools import partial
 from inspect import Parameter, signature
+from pathlib import Path
+import glob
+import os
+import subprocess
 
 from parsl.app.app import AppBase
 from parsl.app.errors import wrap_error
@@ -168,7 +171,7 @@ class BashApp(AppBase):
 
 
 class BashWatcher(FileSystemEventHandler):
-    """A class to watch for file creation events"""
+    """A class to watch for file creation events on local file systems"""
 
     def __init__(self):
         super().__init__()
@@ -195,12 +198,105 @@ class BashWatcher(FileSystemEventHandler):
             self.added_files.append(event.dest_path)
 
 
+class BashTracker:
+    """A class to watch for file creations on networked file systems. This is done by snapshotting the monitored
+    directories before and after and recording the difference"""
+
+    def __init__(self):
+        self.paths = []
+        self.files = []
+        self.added_files = []
+
+    def add_path(self, path: str) -> None:
+        """Add a directory to be monitored
+
+        Parameters
+        ----------
+        path: str
+            The path to be monitored
+        """
+        self.paths.append(path)
+        self.files.extend(glob.glob(os.path.join(path, '**', '*'), recursive=True))
+
+    def update(self) -> None:
+        """Generate the list of new files based on the initial snapshot and the current state of the paths to be
+         monitored."""
+        temp = []
+        for pth in self.paths:
+            temp.extend(glob.glob(os.path.join(pth, '**', '*'), recursive=True))
+        updated = set(temp)
+        self.added_files = list(updated - set(self.files))
+
+
+class BashObserver(Observer):
+    """Class to monitor directories for new files. Sets up two different watchers: 'inotify' type watcher for local
+    file systems and one which snapshots the directories to be monitored for network file systems"""
+
+    def __init__(self):
+        super().__init__()
+        self.watchers = [BashWatcher(), BashTracker()]
+        self.f_sys = {}
+        mounts = subprocess.check_output(["df", "-T"], text=True).split("\n")
+        for m in mounts:
+            if m.startswith('df:') or m.startswith('Filesystem'):
+                continue
+            parts = m.split()
+
+            if not parts:
+                continue
+            if parts[6] == '/':
+                self.n_root = parts[1] not in ['ext4', 'ext2', 'ext3', 'xfs', 'tmpfs', 'f2fs', 'reiserfs', 'zfs',
+                                           'jfs', 'btrfs', 'reiser4']
+                continue
+            self.f_sys[Path(parts[6])] = parts[1] in ['ext4', 'ext2', 'ext3', 'xfs', 'tmpfs', 'f2fs', 'reiserfs', 'zfs',
+                                                      'jfs', 'btrfs', 'reiser4']
+
+    def schedule(self, path):
+        """Schedule a directory to be monitored by one of the internal watchers.
+
+        Parameters
+        ----------
+        path: str
+            The directory to be monitored
+        """
+        try:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            r_path = Path(path).resolve(True)
+        except FileExistsError:
+            print(f"Observer can only monitor directories. {path} is a file.")
+            raise
+        for p, n in self.f_sys.items():
+            if p.is_relative_to(r_path):
+                if n:
+                    self.watchers[1].add_path(str(r_path))
+                else:
+                    super().schedule(self.watchers[0], str(r_path), recursive=True)
+                return
+        if self.n_root:
+            self.watchers[1].add_path(str(r_path))
+        else:
+            super().schedule(self.watchers[0], str(r_path), recursive=True)
+
+    def stop(self):
+        """Signal the watchers to stop watching the directories."""
+        self.watchers[1].update()
+        super().stop()
+
+    def get_new_files(self) -> list[str]:
+        """ Get a list of all files created in the watched paths
+
+        Returns
+        -------
+        list of strings, one for each new file
+        """
+        return self.watchers[0].added_files + self.watchers[1].added_files
+
+
 class BashWatch(AppBase):
     def __init__(self, func, data_flow_kernel=None, cache=False, executors='all', ignore_for_cache=None):
         super().__init__(func, data_flow_kernel=data_flow_kernel, executors=executors, cache=cache,
                          ignore_for_cache=ignore_for_cache)
         self.kwargs = {}
-
         # We duplicate the extraction of parameter defaults
         # to self.kwargs to ensure availability at point of
         # command string format. Refer: #349
@@ -217,8 +313,7 @@ class BashWatch(AppBase):
         remote_fn.__name__ = self.func.__name__
         self.wrapped_remote_function = wrap_error(remote_fn)
 
-        self.watcher = BashWatcher()
-        self.observer = Observer()
+        self.observer = BashObserver()
         self.outputs = None
 
     def gather(self) -> None:
@@ -226,17 +321,9 @@ class BashWatch(AppBase):
         print("gather")
         self.observer.stop()
         self.observer.join()
-        # e = parent_fu.exception()
-        # if e:
-        #     self.outputs.set_exception(e)
-        # else:
-        for added in self.watcher.added_files:
+        for added in self.observer.get_new_files():
             self.outputs.append(File(added))
         print("Done gather")
-        # self.outputs._is_done = True
-        # self.outputs.parent._outputs = self.outputs
-        # self.outputs.set_result(self.outputs)
-        # self.outputs._observer = False
 
     def __call__(self, outputs, *args, paths=".", **kwargs):
         """Handle the call to a Bash app.
@@ -260,7 +347,7 @@ class BashWatch(AppBase):
         outputs.clear()
         invocation_kwargs['outputs'] = outputs
         self.outputs = outputs
-        outputs._observer = True
+
         if isinstance(paths, str):
             paths = [paths]
         elif isinstance(paths, list):
@@ -274,7 +361,7 @@ class BashWatch(AppBase):
             dfk = self.data_flow_kernel
 
         for pth in paths:
-            self.observer.schedule(self.watcher, pth, recursive=True)
+            self.observer.schedule(pth)
         self.observer.start()
         self.outputs.add_watcher_callback(self.gather)
         app_fut = dfk.submit(self.wrapped_remote_function,
