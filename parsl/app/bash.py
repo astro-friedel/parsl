@@ -246,10 +246,10 @@ class BashObserver(Observer):
                 continue
             if parts[6] == '/':
                 self.n_root = parts[1] not in ['ext4', 'ext2', 'ext3', 'xfs', 'tmpfs', 'f2fs', 'reiserfs', 'zfs',
-                                           'jfs', 'btrfs', 'reiser4']
+                                               'jfs', 'btrfs', 'reiser4']
                 continue
-            self.f_sys[Path(parts[6])] = parts[1] in ['ext4', 'ext2', 'ext3', 'xfs', 'tmpfs', 'f2fs', 'reiserfs', 'zfs',
-                                                      'jfs', 'btrfs', 'reiser4']
+            self.f_sys[Path(parts[6])] = parts[1] not in ['ext4', 'ext2', 'ext3', 'xfs', 'tmpfs', 'f2fs', 'reiserfs', 'zfs',
+                                                          'jfs', 'btrfs', 'reiser4']
 
     def schedule(self, path):
         """Schedule a directory to be monitored by one of the internal watchers.
@@ -266,7 +266,7 @@ class BashObserver(Observer):
             print(f"Observer can only monitor directories. {path} is a file.")
             raise
         for p, n in self.f_sys.items():
-            if p.is_relative_to(r_path):
+            if r_path.is_relative_to(p):
                 if n:
                     self.watchers[1].add_path(str(r_path))
                 else:
@@ -318,12 +318,10 @@ class BashWatch(AppBase):
 
     def gather(self) -> None:
         """ Gather any files that were detected. """
-        print("gather")
         self.observer.stop()
         self.observer.join()
         for added in self.observer.get_new_files():
             self.outputs.append(File(added))
-        print("Done gather")
 
     def __call__(self, outputs, *args, paths=".", **kwargs):
         """Handle the call to a Bash app.
@@ -338,7 +336,6 @@ class BashWatch(AppBase):
                    App_fut
 
         """
-        print("Calling")
         invocation_kwargs = {}
         invocation_kwargs.update(self.kwargs)
         invocation_kwargs.update(kwargs)
